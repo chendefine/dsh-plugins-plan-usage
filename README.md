@@ -105,12 +105,44 @@ dsh-plan-usage/
 ├── package.json       # 声明 dsh.bundle（host 配置层）+ dsh.client（浏览器半）
 ├── cordis.patch.yml   # 贡献的配置层（插入 plan-usage 行）
 ├── index.js           # Host 半：注册 GET /api/plan-usage + GET/POST /api/plan-usage/config
+├── plans/             # Host 半的套餐模块：每个套餐一个文件，注册表统一装配
+│   ├── index.js       #   套餐注册表（PLANS / PLAN_BY_ID / schema 合并）
+│   ├── util.js        #   共享工具（curl 拉取 / 窗口归一化 / 凭据解析 / wire 拼装）
+│   ├── opencode-go.js #   OpenCode Go（opencode.ai 用量接口）
+│   ├── glm.js         #   GLM Coding Plan monitor 接口的共享实现（工厂）
+│   ├── glm-zai.js     #   GLM Z.AI（国际版）
+│   ├── glm-zhipu.js   #   GLM 智谱（国内版）
+│   └── kimi-code.js   #   Kimi Code（官方 /usages + 可选 kimi-auth Cookie 月限增强）
 └── client.js          # 浏览器半：右下角用量角标（shell.overlay）+ 插件配置卡片（settings.plugin.item）
 ```
 
+### 架构说明：套餐如何解耦
+
+- **Host 半**把每个套餐封装成 `plans/*.js` 里的一个模块，统一导出 plan 对象：
+  `{ id, name, fields, schema, source, fetch }`——`fields` 是该套餐在配置扁平键
+  中的字段名、`schema` 是其配置 schema 字段（自动并入插件的 Config 对象）、
+  `source` 是端点/鉴权/凭据候选、`fetch(ctx, shell, cfg)` 是取数 + 归一化。
+  路由与配置读写（`index.js`）全部经 `plans/index.js` 注册表驱动，**没有
+  任何 `if (plan.id === …)` 分支**。
+- **浏览器半**保持单文件（客户端模块系统按「一个插件 id 一个 bundle」加载，
+  且本插件零构建），用两张数据表实现同等解耦：`PLANS` 表（对应 Host 的
+  `plans/*.js`，含配置卡片输入框提示）与 `PLAN_NOTES` 表（套餐级面板脚注）。
+  渲染与配置逻辑纯通用，同样没有按套餐 id 的分支。
+
+### 接入一个新套餐
+
+1. 在 `plans/` 下新增一个模块（结构参照 `plans/opencode-go.js`；GLM 类渠道
+   直接调用 `plans/glm.js` 的 `createGlmPlan`），实现 `fetch` 取数 + 归一化，
+   返回 wire 对象（`{ id, name, rollingUsage, weeklyUsage, monthlyUsage, … }`）；
+2. 在 `plans/index.js` 注册表里登记（`PLANS` 数组加一项）；
+3. 浏览器半：在 `client.js` 的 `PLANS` 表加一项（`credentialHint`；有 Cookie
+   输入框则加 `cookieHint`），有套餐级脚注则在 `PLAN_NOTES` 加一项；
+4. 完成——配置 schema、配置卡片、角标取数与渲染全部自动生效，`index.js`
+   与渲染逻辑一行不用改。
+
 ## 工作原理
 
-- **Host 半**（`index.js`）：`webServer` 注册 `GET /api/plan-usage`，并行拉取每个已启用套餐（渠道）的用量——OpenCode Go 经 `curl` 拉取 `https://opencode.ai/zen/go/v1/usage`（Bearer），GLM Z.AI / 智谱分别拉取各自的 `quota/limit` 接口（无 Bearer），Kimi Code 拉取 `https://api.kimi.com/coding/v1/usages`（Bearer，可选 kimi-auth Cookie 增强月度会员额度）——归一化后按套餐返回 JSON；同时注册 `plan-usage` 设置命名空间（全局开关 + 各套餐开关与密钥，密钥 `role('secret')`）作为配置的持久化存储，并注册 `GET/POST /api/plan-usage/config` 供浏览器读写配置。每个套餐的 Key 按「插件配置 > 模型配置（凭据库）」解析。
+- **Host 半**（`index.js` + `plans/`）：`webServer` 注册 `GET /api/plan-usage`，并行拉取每个已启用套餐（渠道）的用量——OpenCode Go 经 `curl` 拉取 `https://opencode.ai/zen/go/v1/usage`（Bearer），GLM Z.AI / 智谱分别拉取各自的 `quota/limit` 接口（无 Bearer），Kimi Code 拉取 `https://api.kimi.com/coding/v1/usages`（Bearer，可选 kimi-auth Cookie 增强月度会员额度）——每个套餐的端点、鉴权与归一化独立封装在 `plans/` 下的模块里，归一化后按套餐返回 JSON；同时注册 `plan-usage` 设置命名空间（全局开关 + 各套餐开关与密钥，密钥 `role('secret')`）作为配置的持久化存储，并注册 `GET/POST /api/plan-usage/config` 供浏览器读写配置。每个套餐的 Key 按「插件配置 > 模型配置（凭据库）」解析。
 - **浏览器半**（`client.js`）：以 `window.__ModuleLoader__.load` 闭包工厂注册到客户端模块表，在 `shell.overlay` 插槽渲染角标（`fetch('/api/plan-usage')` 同源取数、每 60 秒轮询，并随全局/套餐开关显示/隐藏），在 `settings.plugin.item` 插槽渲染配置卡片。
 
 > 配置卡片不依赖 harness 的「配置客户端命名空间白名单」：浏览器端通过插件自己的 `/api/plan-usage/config` 路由读写，Host 端用 in-process 的设置命名空间持久化。因此**安装本插件无需修改 harness 源码**。

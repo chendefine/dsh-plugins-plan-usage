@@ -8,6 +8,16 @@
  *      开关，以及每个套餐各自的开关与 API Key 输入框（write-only 密钥）；
  *      Kimi Code 额外有可选的 kimi-auth Cookie 输入框（用于月度会员额度）。
  *
+ * 架构：与 Host 半（index.js + plans/ 目录）一一对应，本文件的套餐相关
+ * 内容全部数据化——PLANS 表（id/name/输入框提示，对应 Host 的 plans/*.js）
+ * 与 PLAN_NOTES 表（套餐级面板脚注，键为套餐 id）。渲染与配置逻辑是纯
+ * 通用的，不出现 `if (plan.id === ...)` 分支；接入新套餐只改这两张表。
+ *
+ * 为什么浏览器半是单文件：客户端模块系统按「一个插件 id 一个 bundle」加载
+ * （`/plugins/<id>/client.js`，HMR 也只按该 id 失效），外部插件没有多文件
+ * 加载通道；本插件保持零构建（GitHub 源码安装不跑 prepare 脚本）。因此套餐
+ * 解耦在 Host 半拆成物理模块，浏览器半用数据表实现同等的解耦效果。
+ *
  * 配置卡片不依赖 harness 的设置命名空间白名单：控制器通过插件自己的
  * `GET/POST /api/plan-usage/config` 路由读写配置（Host 半用 in-process 的
  * settings 命名空间持久化），因此无需修改 harness 源码。
@@ -40,11 +50,12 @@ var WINDOWS = [
 var PLAN_NAME = '套餐用量'
 
 /**
- * 已接入的套餐（渠道）：id 与 Host 半的 wire 标识一致。每接入一个套餐，在这里追加
- * 一项（credentialHint 用于配置卡片的占位/提示文案）。GLM 分为两个渠道：
- * `glm-zai` 国际版 Z.AI 与 `glm-zhipu` 智谱开放平台，各自独立开关与 API Key。
- * `kimi-code` 额外有 `cookieHint`：配置卡片据此渲染可选的 kimi-auth Cookie 输入框
- * （月度会员额度增强，未配置时角标只显示 5小时/周限）。
+ * 已接入的套餐（渠道）：id 与 Host 半的 wire 标识一致，一一对应 Host 的
+ * plans/*.js 模块。每接入一个套餐，在这里追加一项（credentialHint 用于
+ * 配置卡片的占位/提示文案）。GLM 分为两个渠道：`glm-zai` 国际版 Z.AI 与
+ * `glm-zhipu` 智谱开放平台，各自独立开关与 API Key。`kimi-code` 额外有
+ * `cookieHint`：配置卡片据此渲染可选的 kimi-auth Cookie 输入框（月度会员
+ * 额度增强，未配置时角标只显示 5小时/周限）。
  */
 var PLANS = [
   { id: 'opencode-go', name: 'OpenCode Go', credentialHint: 'opencode-go' },
@@ -58,6 +69,35 @@ function planMeta(id) {
     if (PLANS[i].id === id) return PLANS[i]
   }
   return { id: id, name: id, credentialHint: id }
+}
+
+/**
+ * 套餐级面板脚注：键为套餐 id（对应 Host 的 plans/*.js），值为该套餐的
+ * 提示函数（接收 wire 用量对象与设置快照，返回提示文案数组）。没有脚注
+ * 的套餐不登记，渲染层统一走 planNotes()。
+ */
+var PLAN_NOTES = {
+  'opencode-go': function (plan) {
+    var notes = []
+    if (plan.useBalance) notes.push('超出限额后将使用 Zen 余额')
+    return notes
+  },
+  'kimi-code': function (plan, settingsSnap) {
+    var notes = []
+    // 未取到月度窗口时区分「未配置 Cookie」与「Cookie 过期/获取失败」两种情况。
+    if (plan.monthlyUsage == null) {
+      var kimiSnap = settingsSnap && settingsSnap.plans ? settingsSnap.plans['kimi-code'] : null
+      notes.push(kimiSnap && kimiSnap.cookieConfigured
+        ? '月度会员额度获取失败（kimi-auth Cookie 可能已过期）'
+        : '配置 kimi-auth Cookie 可显示月度会员额度')
+    }
+    return notes
+  },
+}
+
+function planNotes(plan, settingsSnap) {
+  var fn = PLAN_NOTES[plan.id]
+  return fn ? fn(plan, settingsSnap) : []
 }
 
 function fmtReset(sec) {
@@ -242,16 +282,9 @@ function PlanUsageBadge(props) {
             h('span', { style: rowResetStyle }, reset),
           )
         })
-        // 套餐级脚注：OpenCode Go 的 Zen 余额提示；Kimi Code 未取到月度窗口时
-        // 区分「未配置 Cookie」与「Cookie 过期/获取失败」两种情况。
-        var notes = []
-        if (plan.useBalance) notes.push('超出限额后将使用 Zen 余额')
-        if (plan.monthlyUsage == null && meta.cookieHint) {
-          var kimiSnap = settingsSnap && settingsSnap.plans ? settingsSnap.plans['kimi-code'] : null
-          notes.push(kimiSnap && kimiSnap.cookieConfigured
-            ? '月度会员额度获取失败（' + meta.cookieHint + ' Cookie 可能已过期）'
-            : '配置 ' + meta.cookieHint + ' Cookie 可显示月度会员额度')
-        }
+        // 套餐级脚注：各套餐的提示逻辑集中在 PLAN_NOTES 表（见上），
+        // 渲染层不感知具体套餐。
+        var notes = planNotes(plan, settingsSnap)
         inner = h('div', {},
           rows,
           notes.map(function (note, ni) {
