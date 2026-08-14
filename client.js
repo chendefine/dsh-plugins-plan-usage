@@ -1,8 +1,12 @@
 /**
  * dsh-plan-usage 的浏览器半：
- *   1. 在 shell.overlay 右下角渲染 OpenCode Go 用量角标；
- *   2. 在「设置 → 插件 → 插件配置」注册配置卡片：一个「启用 OpenCode Go」开关，
- *      启用时显示 API Key 输入框（write-only 密钥）。
+ *   1. 在 shell.overlay 右下角渲染套餐用量角标（当前支持 OpenCode Go、
+ *      GLM Coding Plan 的两个渠道（国际版 Z.AI / 智谱）与 Kimi Code），
+ *      胶囊每个套餐一行展示 5小时/周限/月限 三个窗口，展开面板按套餐分区
+ *      显示进度条；
+ *   2. 在「设置 → 插件 → 插件配置」注册配置卡片：一个「启用套餐用量角标」全局
+ *      开关，以及每个套餐各自的开关与 API Key 输入框（write-only 密钥）；
+ *      Kimi Code 额外有可选的 kimi-auth Cookie 输入框（用于月度会员额度）。
  *
  * 配置卡片不依赖 harness 的设置命名空间白名单：控制器通过插件自己的
  * `GET/POST /api/plan-usage/config` 路由读写配置（Host 半用 in-process 的
@@ -32,25 +36,29 @@ var WINDOWS = [
   { key: 'monthlyUsage', label: '月限' },
 ]
 
-/**
- * 面向用户的通用名称：不绑定具体套餐提供方（当前为 OpenCode Go，
- * 未来接入更多套餐时无需逐个改文案）。
- */
+/** 面向用户的通用名称：不绑定具体套餐提供方。 */
 var PLAN_NAME = '套餐用量'
 
 /**
- * 已接入的套餐。当前仅 OpenCode Go；后续每接入一个套餐，在这里追加一项，
- * 并在配置卡片中为每个套餐提供自己的开关与 API Key（见配置卡片注释）。
+ * 已接入的套餐（渠道）：id 与 Host 半的 wire 标识一致。每接入一个套餐，在这里追加
+ * 一项（credentialHint 用于配置卡片的占位/提示文案）。GLM 分为两个渠道：
+ * `glm-zai` 国际版 Z.AI 与 `glm-zhipu` 智谱开放平台，各自独立开关与 API Key。
+ * `kimi-code` 额外有 `cookieHint`：配置卡片据此渲染可选的 kimi-auth Cookie 输入框
+ * （月度会员额度增强，未配置时角标只显示 5小时/周限）。
  */
 var PLANS = [
-  { id: 'opencode-go', name: 'OpenCode Go' },
+  { id: 'opencode-go', name: 'OpenCode Go', credentialHint: 'opencode-go' },
+  { id: 'glm-zai', name: 'GLM Z.AI', credentialHint: 'ZAI' },
+  { id: 'glm-zhipu', name: 'GLM 智谱', credentialHint: 'ZHIPU / GLM' },
+  { id: 'kimi-code', name: 'Kimi Code', credentialHint: 'KIMI_CODE', cookieHint: 'kimi-auth' },
 ]
 
-/** 当前套餐（单套餐阶段取第一项；多套餐时角标按套餐分别标注）。 */
-var CURRENT_PLAN = PLANS[0]
-
-/** 胶囊与展开面板的展示名：标注当前套餐，如「OpenCode Go 用量」。 */
-var PLAN_USAGE_NAME = CURRENT_PLAN.name + ' 用量'
+function planMeta(id) {
+  for (var i = 0; i < PLANS.length; i++) {
+    if (PLANS[i].id === id) return PLANS[i]
+  }
+  return { id: id, name: id, credentialHint: id }
+}
 
 function fmtReset(sec) {
   if (sec == null || !(sec > 0)) return ''
@@ -67,24 +75,49 @@ function toneColor(p) {
 }
 
 var rootStyle = { position: 'fixed', right: 16, bottom: 16, zIndex: 1000, pointerEvents: 'auto', fontFamily: 'inherit' }
-var pillStyle = { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px', borderRadius: 999, background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)', boxShadow: '0 2px 12px rgba(0,0,0,0.18)', cursor: 'pointer', color: 'var(--dsw-alias-label-primary)', fontSize: 12, lineHeight: 1, userSelect: 'none', whiteSpace: 'nowrap' }
+// 胶囊外形自适应：只有一行时保持圆弧（borderRadius 999）；多行时改为圆角矩形。
+var pillStyle = { display: 'flex', flexDirection: 'column', gap: 3, padding: '8px 12px', background: 'var(--dsw-alias-bg-layer-2)', border: '1px solid var(--dsw-alias-border-l1)', boxShadow: '0 2px 12px rgba(0,0,0,0.18)', cursor: 'pointer', color: 'var(--dsw-alias-label-primary)', fontSize: 12, userSelect: 'none' }
+var pillRowStyle = { display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', lineHeight: 1.4 }
+var pillSegStyle = { display: 'inline-flex', alignItems: 'center', gap: 6 }
 var dotStyle = { width: 8, height: 8, borderRadius: '50%', flex: 'none' }
-var labelStyle = { fontWeight: 600 }
+var capNameStyle = { flex: 'none', minWidth: 84, fontWeight: 600 }
+// 用量值列固定宽度：保证各行百分比右缘对齐（最宽场景如 "100% 100% 100%" 也放得下）。
+var capValueStyle = { flex: 'none', width: 96, fontVariantNumeric: 'tabular-nums' }
 var valueStyle = { fontVariantNumeric: 'tabular-nums' }
 var panelStyle = { position: 'absolute', right: 0, bottom: 'calc(100% + 10px)', minWidth: 232, padding: 12, borderRadius: 12, background: 'var(--dsw-alias-bg-overlay)', border: '1px solid var(--dsw-alias-border-l1)', boxShadow: '0 8px 28px rgba(0,0,0,0.22)', color: 'var(--dsw-alias-label-primary)', fontSize: 12 }
 var panelTitleStyle = { fontWeight: 600, margin: '0 0 10px', fontSize: 13 }
+var sectionTitleStyle = { fontWeight: 600, margin: '10px 0 4px', fontSize: 12 }
 var rowStyle = { display: 'flex', alignItems: 'center', gap: 8, margin: '6px 0' }
 var rowLabelStyle = { width: 44, flex: 'none', color: 'var(--dsw-alias-label-secondary)' }
 var barStyle = { flex: 1, height: 6, borderRadius: 3, background: 'var(--dsw-alias-border-l1)', overflow: 'hidden' }
 var barFillStyle = { display: 'block', height: '100%', borderRadius: 3, transition: 'width 0.2s ease' }
-var rowPctStyle = { width: 36, textAlign: 'right', flex: 'none', fontVariantNumeric: 'tabular-nums' }
-var rowResetStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 }
+// 列宽全部固定（label/bar/百分比/剩余时间），保证各行进度条与文字逐列对齐。
+var rowPctStyle = { width: 40, textAlign: 'right', flex: 'none', fontVariantNumeric: 'tabular-nums' }
+var rowResetStyle = { width: 48, flex: 'none', color: 'var(--dsw-alias-label-secondary)', fontSize: 11 }
 var noteStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: 11, marginTop: 6 }
+var sectionNoteStyle = { color: 'var(--dsw-alias-label-secondary)', fontSize: 11, margin: '2px 0 6px' }
+
+/** 某套餐最差窗口的百分比；无任何窗口数据返回 -1。 */
+function worstPercent(plan) {
+  var worst = -1
+  for (var i = 0; i < WINDOWS.length; i++) {
+    var v = plan[WINDOWS[i].key]
+    if (v && typeof v.percent === 'number' && v.percent > worst) worst = v.percent
+  }
+  return worst
+}
 
 function PlanUsageBadge(props) {
-  // 配置开关：关闭时整颗角标隐藏。
+  // 配置开关：全局关闭时整颗角标隐藏；套餐级开关决定取数/展示范围。
   var settingsSnap = React.useSyncExternalStore(props.settings.subscribe, props.settings.getSnapshot)
   var enabled = !settingsSnap || settingsSnap.enabled !== false
+  var planKey = ''
+  if (settingsSnap && settingsSnap.plans) {
+    for (var pi = 0; pi < PLANS.length; pi++) {
+      var ps = settingsSnap.plans[PLANS[pi].id]
+      planKey += ps && ps.enabled === false ? '0' : '1'
+    }
+  }
 
   var stateHook = React.useState({ loading: true })
   var state = stateHook[0]
@@ -111,77 +144,129 @@ function PlanUsageBadge(props) {
     load()
     var timer = setInterval(load, 60000)
     return function () { alive = false; clearInterval(timer) }
-  }, [enabled])
+  }, [enabled, planKey])
 
   if (enabled === false || (state && state.error === 'disabled')) return null
 
+  // 只展示当前仍启用的套餐（禁用后旧数据一并丢弃）。
   var data = state && state.ok ? state.data : null
-  var dotColor = 'var(--dsw-alias-label-secondary)'
-  var text = '…'
-  var pillTitle = PLAN_USAGE_NAME
-  if (state && state.loading) {
-    text = '…'
-  } else if (data) {
-    var worst = -1
-    var parts = []
-    var labeled = []
-    for (var i = 0; i < WINDOWS.length; i++) {
-      var w = WINDOWS[i]
-      var v = data[w.key]
-      if (v && typeof v.percent === 'number') {
-        if (v.percent > worst) worst = v.percent
-        parts.push(v.percent + '%')
-        labeled.push(w.label + ' ' + v.percent + '%')
-      }
-    }
-    if (parts.length === 0) {
-      text = '—'
-    } else {
-      dotColor = toneColor(worst)
-      text = parts.join(' ')
-      pillTitle = labeled.join(' ')
-    }
-  } else if (state && state.error === 'no-key') {
-    text = '请设置 Key'
-    pillTitle = state.message || '未配置 OpenCode Go API Key'
-  } else {
-    text = '获取失败'
-    pillTitle = state.message || '获取失败'
+  var plans = data && Array.isArray(data.plans) ? data.plans : []
+  if (settingsSnap && settingsSnap.plans) {
+    plans = plans.filter(function (p) {
+      var ps = settingsSnap.plans[p.id]
+      return ps === undefined || ps.enabled !== false
+    })
   }
 
-  var pill = h('button', { style: pillStyle, type: 'button', onClick: function () { setOpen(!open) }, title: pillTitle },
-    h('span', { style: Object.assign({}, dotStyle, { background: dotColor }) }),
-    h('span', { style: labelStyle }, CURRENT_PLAN.name),
-    h('span', { style: valueStyle }, text),
+  // 胶囊：多行，每个套餐一行，依次展示 5小时/周限/月限 三个窗口的百分比
+  // （缺失的窗口按 0% 计）；无数据的套餐在该行标注状态（请设置 Key / 获取失败）。
+  var capsuleRows = []
+  var pillTitle = PLAN_NAME
+  for (var i = 0; i < plans.length; i++) {
+    var plan = plans[i]
+    var meta = planMeta(plan.id)
+    var worst = worstPercent(plan)
+    if (worst >= 0) {
+      var values = WINDOWS.map(function (w) {
+        var v = plan[w.key]
+        return (v && typeof v.percent === 'number' ? v.percent : 0) + '%'
+      })
+      capsuleRows.push({ dot: toneColor(worst), label: meta.name, values: values })
+    } else if (plan.error === 'no-key') {
+      capsuleRows.push({ dot: null, label: meta.name, values: ['请设置 Key'] })
+    } else {
+      capsuleRows.push({ dot: null, label: meta.name, values: ['获取失败'] })
+    }
+  }
+  var dotColor = 'var(--dsw-alias-label-secondary)'
+  var text = '…'
+  if (state && state.loading) {
+    text = '…'
+  } else if (capsuleRows.length > 0) {
+    text = capsuleRows.map(function (r) { return r.label + ' ' + r.values.join(' ') }).join('\n')
+    pillTitle = text
+  } else if (state && state.error) {
+    text = '获取失败'
+    pillTitle = state.message || '获取失败'
+  } else {
+    text = '—'
+  }
+
+  var pill = h('button', {
+    style: Object.assign({}, pillStyle, { borderRadius: capsuleRows.length > 1 ? 12 : 999 }),
+    type: 'button',
+    onClick: function () { setOpen(!open) },
+    title: pillTitle,
+  },
+    capsuleRows.length > 0
+      ? capsuleRows.map(function (r, idx) {
+        return h('span', { style: pillRowStyle, key: idx },
+          h('span', { style: Object.assign({}, dotStyle, { background: r.dot || dotColor }) }),
+          h('span', { style: capNameStyle }, r.label),
+          h('span', { style: capValueStyle }, r.values.join(' ')),
+        )
+      })
+      : h('span', { style: pillSegStyle },
+        h('span', { style: Object.assign({}, dotStyle, { background: dotColor }) }),
+        h('span', { style: valueStyle }, text),
+      ),
   )
 
   var panel = null
   if (open) {
-    var rows = data ? WINDOWS.map(function (w) {
-      var v = data[w.key]
-      var pct = v && typeof v.percent === 'number' ? v.percent : 0
-      var limited = v && v.status === 'rate-limited'
-      var reset = ''
-      if (v && typeof v.resetsAt === 'string' && v.resetsAt.length > 0) {
-        reset = fmtReset((Date.parse(v.resetsAt) - Date.now()) / 1000)
-      } else if (v && typeof v.resetInSec === 'number') {
-        reset = fmtReset(v.resetInSec)
+    var sections = plans.map(function (plan) {
+      var meta = planMeta(plan.id)
+      var title = meta.name + ' 用量' + (plan.level ? ' · ' + plan.level : '')
+      var inner
+      if (plan.error) {
+        inner = h('div', { style: sectionNoteStyle }, plan.message || '无法获取用量')
+      } else {
+        // 只渲染有数据的窗口：套餐没有的窗口（如某些 GLM 套餐无周限）不占行。
+        var rows = WINDOWS
+          .filter(function (w) { return plan[w.key] != null })
+          .map(function (w) {
+          var v = plan[w.key]
+          var pct = v && typeof v.percent === 'number' ? v.percent : 0
+          var limited = v && v.status === 'rate-limited'
+          var reset = ''
+          if (v && typeof v.resetsAt === 'string' && v.resetsAt.length > 0) {
+            reset = fmtReset((Date.parse(v.resetsAt) - Date.now()) / 1000)
+          } else if (v && typeof v.resetInSec === 'number') {
+            reset = fmtReset(v.resetInSec)
+          }
+          var fill = Object.assign({}, barFillStyle, { width: Math.max(0, Math.min(100, pct)) + '%', background: toneColor(limited ? 100 : pct) })
+          return h('div', { style: rowStyle, key: w.key },
+            h('span', { style: rowLabelStyle }, w.label),
+            h('span', { style: barStyle }, h('span', { style: fill })),
+            h('span', { style: rowPctStyle }, pct + '%'),
+            h('span', { style: rowResetStyle }, reset),
+          )
+        })
+        // 套餐级脚注：OpenCode Go 的 Zen 余额提示；Kimi Code 未取到月度窗口时
+        // 区分「未配置 Cookie」与「Cookie 过期/获取失败」两种情况。
+        var notes = []
+        if (plan.useBalance) notes.push('超出限额后将使用 Zen 余额')
+        if (plan.monthlyUsage == null && meta.cookieHint) {
+          var kimiSnap = settingsSnap && settingsSnap.plans ? settingsSnap.plans['kimi-code'] : null
+          notes.push(kimiSnap && kimiSnap.cookieConfigured
+            ? '月度会员额度获取失败（' + meta.cookieHint + ' Cookie 可能已过期）'
+            : '配置 ' + meta.cookieHint + ' Cookie 可显示月度会员额度')
+        }
+        inner = h('div', {},
+          rows,
+          notes.map(function (note, ni) {
+            return h('div', { style: sectionNoteStyle, key: 'note' + ni }, note)
+          }),
+        )
       }
-      var fill = Object.assign({}, barFillStyle, { width: Math.max(0, Math.min(100, pct)) + '%', background: toneColor(limited ? 100 : pct) })
-      return h('div', { style: rowStyle, key: w.key },
-        h('span', { style: rowLabelStyle }, w.label),
-        h('span', { style: barStyle }, h('span', { style: fill })),
-        h('span', { style: rowPctStyle }, pct + '%'),
-        h('span', { style: rowResetStyle }, reset),
+      return h('div', { key: plan.id },
+        h('div', { style: sectionTitleStyle }, title),
+        inner,
       )
-    }) : null
-    var note = !data
-      ? h('div', { style: noteStyle }, (state && state.message) || '无法获取用量')
-      : (data.useBalance ? h('div', { style: noteStyle }, '超出限额后将使用 Zen 余额') : null)
+    })
     panel = h('div', { style: panelStyle },
-      h('div', { style: panelTitleStyle }, PLAN_USAGE_NAME),
-      rows,
-      note,
+      h('div', { style: panelTitleStyle }, PLAN_NAME),
+      sections,
     )
   }
 
@@ -237,33 +322,51 @@ var CARD_CSS = [
 
 /**
  * 配置卡片控制器：通过插件自己的 `GET/POST /api/plan-usage/config` 读写配置，
- * 维护分阶段草稿（保存才写入）。同时为角标提供 `enabled` 快照。
+ * 维护分阶段草稿（保存才写入）。同时为角标提供 `enabled` 全局开关与
+ * `plans.<id>.enabled` 套餐开关快照。
  */
 function PlanUsageController(ctx) {
   var listeners = new Set()
   var snapshot = {
     available: false, writable: true,
-    enabled: true, apiKeyConfigured: false,
-    apiKeyDraft: '', apiKeyClear: false,
-    dirty: false, saving: false, failed: false,
+    enabled: true, dirty: false, saving: false, failed: false,
+    plans: {},
   }
 
   var loaded = false
   var enabled = true
   var writable = true
-  var apiKeyConfigured = false
   var enabledDraft = undefined
-  var apiKeyDraft = ''
-  var apiKeyClear = false
   var saving = false
   var failed = false
+
+  // id -> { enabled, apiKeyConfigured, cookieConfigured, enabledDraft,
+  //          apiKeyDraft, apiKeyClear, cookieDraft, cookieClear }
+  var planState = {}
+
+  function planStore(id) {
+    var st = planState[id]
+    if (st === undefined) {
+      st = { enabled: true, apiKeyConfigured: false, cookieConfigured: false }
+      planState[id] = st
+    }
+    return st
+  }
 
   function applyData(data) {
     if (!data) return
     enabled = data.enabled !== false
     writable = data.writable !== false
-    apiKeyConfigured = data.apiKeyConfigured === true
     loaded = true
+    var plans = data.plans && typeof data.plans === 'object' ? data.plans : {}
+    for (var i = 0; i < PLANS.length; i++) {
+      var ps = plans[PLANS[i].id]
+      if (!ps) continue
+      var st = planStore(PLANS[i].id)
+      st.enabled = ps.enabled !== false
+      st.apiKeyConfigured = ps.apiKeyConfigured === true
+      st.cookieConfigured = ps.cookieConfigured === true
+    }
   }
 
   function load() {
@@ -277,15 +380,32 @@ function PlanUsageController(ctx) {
   }
 
   function project() {
-    var checked = enabledDraft !== undefined ? enabledDraft : enabled
-    var dirty = enabledDraft !== undefined || apiKeyClear || apiKeyDraft.trim() !== ''
+    var dirty = enabledDraft !== undefined
+    var plans = {}
+    for (var i = 0; i < PLANS.length; i++) {
+      var plan = PLANS[i]
+      var st = planStore(plan.id)
+      var checked = st.enabledDraft !== undefined ? st.enabledDraft : st.enabled
+      var planDirty = st.enabledDraft !== undefined || st.apiKeyClear
+        || (typeof st.apiKeyDraft === 'string' && st.apiKeyDraft.trim() !== '')
+        || st.cookieClear
+        || (typeof st.cookieDraft === 'string' && st.cookieDraft.trim() !== '')
+      if (planDirty) dirty = true
+      plans[plan.id] = {
+        enabled: checked,
+        apiKeyConfigured: st.apiKeyConfigured === true,
+        apiKeyDraft: typeof st.apiKeyDraft === 'string' ? st.apiKeyDraft : '',
+        apiKeyClear: st.apiKeyClear === true,
+        cookieConfigured: st.cookieConfigured === true,
+        cookieDraft: typeof st.cookieDraft === 'string' ? st.cookieDraft : '',
+        cookieClear: st.cookieClear === true,
+      }
+    }
     return {
       available: loaded,
       writable: writable,
-      enabled: checked,
-      apiKeyConfigured: apiKeyConfigured,
-      apiKeyDraft: apiKeyDraft,
-      apiKeyClear: apiKeyClear,
+      enabled: enabledDraft !== undefined ? enabledDraft : enabled,
+      plans: plans,
       dirty: dirty,
       saving: saving,
       failed: failed,
@@ -308,11 +428,25 @@ function PlanUsageController(ctx) {
     if (saving) return Promise.resolve()
     var payload = {}
     if (enabledDraft !== undefined) payload.enabled = enabledDraft
-    if (apiKeyClear) payload.clearKey = true
-    else {
-      var key = apiKeyDraft.trim()
-      if (key !== '') payload.apiKey = key
+    var plans = {}
+    for (var i = 0; i < PLANS.length; i++) {
+      var plan = PLANS[i]
+      var st = planStore(plan.id)
+      var entry = {}
+      if (st.enabledDraft !== undefined) entry.enabled = st.enabledDraft
+      if (st.apiKeyClear) entry.clearKey = true
+      else {
+        var key = typeof st.apiKeyDraft === 'string' ? st.apiKeyDraft.trim() : ''
+        if (key !== '') entry.apiKey = key
+      }
+      if (st.cookieClear) entry.clearCookie = true
+      else {
+        var cookie = typeof st.cookieDraft === 'string' ? st.cookieDraft.trim() : ''
+        if (cookie !== '') entry.cookie = cookie
+      }
+      if (Object.keys(entry).length > 0) plans[plan.id] = entry
     }
+    if (Object.keys(plans).length > 0) payload.plans = plans
     if (Object.keys(payload).length === 0) return Promise.resolve()
 
     saving = true
@@ -326,8 +460,14 @@ function PlanUsageController(ctx) {
       .then(function (r) { return r.json() })
       .then(function (result) {
         enabledDraft = undefined
-        apiKeyDraft = ''
-        apiKeyClear = false
+        for (var i = 0; i < PLANS.length; i++) {
+          var st = planStore(PLANS[i].id)
+          st.enabledDraft = undefined
+          st.apiKeyDraft = ''
+          st.apiKeyClear = false
+          st.cookieDraft = ''
+          st.cookieClear = false
+        }
         saving = false
         failed = !(result && result.ok)
         if (result && result.ok) applyData(result.data)
@@ -335,8 +475,14 @@ function PlanUsageController(ctx) {
       })
       .catch(function () {
         enabledDraft = undefined
-        apiKeyDraft = ''
-        apiKeyClear = false
+        for (var i = 0; i < PLANS.length; i++) {
+          var st = planStore(PLANS[i].id)
+          st.enabledDraft = undefined
+          st.apiKeyDraft = ''
+          st.apiKeyClear = false
+          st.cookieDraft = ''
+          st.cookieClear = false
+        }
         saving = false
         failed = true
         publish()
@@ -350,12 +496,21 @@ function PlanUsageController(ctx) {
     getSnapshot: function () { return snapshot },
     subscribe: function (fn) { listeners.add(fn); return function () { listeners.delete(fn) } },
     setEnabled: function (v) { enabledDraft = !!v; failed = false; publish() },
-    setApiKey: function (text) { apiKeyDraft = text; apiKeyClear = false; failed = false; publish() },
-    clearApiKey: function () { apiKeyClear = true; apiKeyDraft = ''; failed = false; publish() },
+    setPlanEnabled: function (id, v) { planStore(id).enabledDraft = !!v; failed = false; publish() },
+    setPlanApiKey: function (id, text) { planStore(id).apiKeyDraft = text; planStore(id).apiKeyClear = false; failed = false; publish() },
+    clearPlanApiKey: function (id) { planStore(id).apiKeyClear = true; planStore(id).apiKeyDraft = ''; failed = false; publish() },
+    setPlanCookie: function (id, text) { planStore(id).cookieDraft = text; planStore(id).cookieClear = false; failed = false; publish() },
+    clearPlanCookie: function (id) { planStore(id).cookieClear = true; planStore(id).cookieDraft = ''; failed = false; publish() },
     discard: function () {
       enabledDraft = undefined
-      apiKeyDraft = ''
-      apiKeyClear = false
+      for (var i = 0; i < PLANS.length; i++) {
+        var st = planStore(PLANS[i].id)
+        st.enabledDraft = undefined
+        st.apiKeyDraft = ''
+        st.apiKeyClear = false
+        st.cookieDraft = ''
+        st.cookieClear = false
+      }
       failed = false
       publish()
     },
@@ -363,11 +518,81 @@ function PlanUsageController(ctx) {
   }
 }
 
+/** 单个套餐的配置区块：开关 + （启用时）API Key 输入；Kimi Code 额外有 Cookie 输入。 */
+function PlanBlock(props) {
+  var c = props.controller
+  var plan = props.plan
+  var snap = props.snap
+  var disabled = props.disabled
+  var planSnap = snap.plans[plan.id] || { enabled: true, apiKeyConfigured: false, apiKeyDraft: '', apiKeyClear: false, cookieConfigured: false, cookieDraft: '', cookieClear: false }
+  return h('div', { style: fieldSplitStyle },
+    h('label', { style: checkboxRowStyle },
+      h('input', {
+        type: 'checkbox',
+        checked: planSnap.enabled,
+        disabled: disabled,
+        onChange: function (e) { c.setPlanEnabled(plan.id, e.target.checked) },
+      }),
+      h('span', { style: fieldLabelStyle }, '启用 ' + plan.name + ' 用量角标'),
+    ),
+    planSnap.enabled
+      ? h('div', {},
+        h('div', { style: Object.assign({}, fieldHeadStyle, { marginTop: 6 }) },
+          h('label', { style: fieldLabelStyle, htmlFor: 'plan-usage-' + plan.id + '-api-key' }, plan.name + ' API Key（可选）'),
+          h('span', { style: badgesStyle },
+            h('span', { style: planSnap.apiKeyConfigured ? badgeStyle : badgeMutedStyle }, planSnap.apiKeyConfigured ? '已配置' : '未配置'),
+            planSnap.apiKeyConfigured
+              ? h('button', { type: 'button', style: resetStyle, className: 'dsh-plan-usage-reset', disabled: disabled, onClick: function () { c.clearPlanApiKey(plan.id) } }, '清除')
+              : null,
+          ),
+        ),
+        h('input', {
+          id: 'plan-usage-' + plan.id + '-api-key',
+          type: 'password',
+          autoComplete: 'off',
+          style: inputStyle,
+          className: 'dsh-plan-usage-input',
+          value: planSnap.apiKeyDraft,
+          placeholder: '留空则使用「设置 → 模型」中的 ' + plan.credentialHint + ' API Key',
+          disabled: disabled,
+          onChange: function (e) { c.setPlanApiKey(plan.id, e.target.value) },
+        }),
+        h('p', { style: hintStyle }, '此处填写的 Key 优先级高于「设置 → 模型」中的 ' + plan.credentialHint + ' Key；两边都未设置时，角标会提示配置。'),
+        plan.cookieHint
+          ? h('div', {},
+            h('div', { style: Object.assign({}, fieldHeadStyle, { marginTop: 6 }) },
+              h('label', { style: fieldLabelStyle, htmlFor: 'plan-usage-' + plan.id + '-cookie' }, plan.name + ' ' + plan.cookieHint + ' Cookie（可选）'),
+              h('span', { style: badgesStyle },
+                h('span', { style: planSnap.cookieConfigured ? badgeStyle : badgeMutedStyle }, planSnap.cookieConfigured ? '已配置' : '未配置'),
+                planSnap.cookieConfigured
+                  ? h('button', { type: 'button', style: resetStyle, className: 'dsh-plan-usage-reset', disabled: disabled, onClick: function () { c.clearPlanCookie(plan.id) } }, '清除')
+                  : null,
+              ),
+            ),
+            h('input', {
+              id: 'plan-usage-' + plan.id + '-cookie',
+              type: 'password',
+              autoComplete: 'off',
+              style: inputStyle,
+              className: 'dsh-plan-usage-input',
+              value: planSnap.cookieDraft,
+              placeholder: '留空则读取环境变量 KIMI_AUTH_TOKEN',
+              disabled: disabled,
+              onChange: function (e) { c.setPlanCookie(plan.id, e.target.value) },
+            }),
+            h('p', { style: hintStyle }, '用于获取 Kimi 会员月度额度；可在 kimi.com 浏览器开发者工具中复制 ' + plan.cookieHint + ' Cookie 值，过期后需重新复制。'),
+          )
+          : null,
+      )
+      : null,
+  )
+}
+
 /**
  * 配置卡片：结构与交互逐项复刻 harness 的 PluginCard——
  * 头部按钮折叠/展开（chevron 旋转、aria-expanded），未保存徽标，只读提示，
  * 底部「放弃修改 / 保存 / 保存中…」按钮及失败提示；按钮与字段配色、字号、
- * 圆角均取同一套 dsw 令牌。
+ * 圆角均取同一套 dsw 令牌。展开区按套餐拆成多个区块，各配自己的开关与 Key。
  */
 function PlanUsageConfigCard(props) {
   var c = props.settings
@@ -392,7 +617,7 @@ function PlanUsageConfigCard(props) {
     },
       h('span', { style: headTextStyle },
         h('span', { style: nameStyle }, PLAN_NAME),
-        h('span', { style: descriptionStyle }, '在 Web 对话框右下角显示套餐用量角标。'),
+        h('span', { style: descriptionStyle }, '在 Web 对话框右下角显示套餐用量角标（OpenCode Go / GLM Z.AI / GLM 智谱 / Kimi Code）。'),
       ),
       dirty ? h('span', { style: pendingStyle }, '未保存') : null,
       h('span', { style: open ? chevronOpenStyle : chevronStyle }, h(P.IconChevronDownOutline14, { size: 14 })),
@@ -400,9 +625,6 @@ function PlanUsageConfigCard(props) {
     open
       ? h('div', { style: bodyStyle },
         !snap.writable ? h('p', { style: readOnlyStyle, role: 'status' }, '本部署的设置为只读。') : null,
-        // 当前仅接入 OpenCode Go 一个套餐：开关与 API Key 都是该套餐专属的，
-        // 因此标注套餐名。后续支持多个套餐时，这里将按套餐拆成多个区块，
-        // 每个套餐对应自己的开关与 API Key 配置项。
         h('div', { style: fieldStyle },
           h('label', { style: checkboxRowStyle },
             h('input', {
@@ -411,34 +633,14 @@ function PlanUsageConfigCard(props) {
               disabled: disabled,
               onChange: function (e) { c.setEnabled(e.target.checked) },
             }),
-            h('span', { style: fieldLabelStyle }, '启用 OpenCode Go 用量角标'),
+            h('span', { style: fieldLabelStyle }, '启用套餐用量角标'),
           ),
           h('p', { style: hintStyle }, '关闭后右下角角标不再显示。'),
         ),
         snap.enabled
-          ? h('div', { style: fieldSplitStyle },
-            h('div', { style: fieldHeadStyle },
-              h('label', { style: fieldLabelStyle, htmlFor: 'plan-usage-api-key' }, 'OpenCode Go API Key（可选）'),
-              h('span', { style: badgesStyle },
-                h('span', { style: snap.apiKeyConfigured ? badgeStyle : badgeMutedStyle }, snap.apiKeyConfigured ? '已配置' : '未配置'),
-                snap.apiKeyConfigured
-                  ? h('button', { type: 'button', style: resetStyle, className: 'dsh-plan-usage-reset', disabled: disabled, onClick: function () { c.clearApiKey() } }, '清除')
-                  : null,
-              ),
-            ),
-            h('input', {
-              id: 'plan-usage-api-key',
-              type: 'password',
-              autoComplete: 'off',
-              style: inputStyle,
-              className: 'dsh-plan-usage-input',
-              value: snap.apiKeyDraft,
-              placeholder: '留空则使用「设置 → 模型」中的 opencode-go API Key',
-              disabled: disabled,
-              onChange: function (e) { c.setApiKey(e.target.value) },
-            }),
-            h('p', { style: hintStyle }, '此处填写的 Key 优先级高于「设置 → 模型」中的 opencode-go Key；两边都未设置时，角标会提示配置。'),
-          )
+          ? PLANS.map(function (plan) {
+            return h(PlanBlock, { key: plan.id, controller: c, plan: plan, snap: snap, disabled: disabled })
+          })
           : null,
         h('div', { style: footerStyle },
           snap.failed ? h('p', { style: failedStyle, role: 'status' }, '本部署没有接受这些值，已保留供你修改。') : null,

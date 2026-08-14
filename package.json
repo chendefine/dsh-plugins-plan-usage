@@ -1,7 +1,7 @@
 {
   "name": "dsh-plan-usage",
-  "version": "0.1.1",
-  "description": "套餐用量角标：在 Web 对话框右下角显示 5小时/周限/月限 三个用量窗口（当前支持 OpenCode Go），并在「设置 → 插件」提供启用开关与 API Key 配置。",
+  "version": "0.1.2",
+  "description": "套餐用量角标：在 Web 对话框右下角显示 5小时/周限/月限 三个用量窗口（支持 OpenCode Go、GLM Coding Plan 双渠道：Z.AI 国际版 / 智谱，以及 Kimi Code 会员套餐额度，月度会员额度可经 kimi-auth Cookie 增强），并在「设置 → 插件」提供各渠道独立的启用开关与 API Key 配置。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -31,6 +31,10 @@
     "dsh",
     "dsh-plugin",
     "opencode",
+    "glm",
+    "zhipu",
+    "kimi",
+    "moonshot",
     "usage",
     "quota"
   ],
