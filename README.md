@@ -1,6 +1,6 @@
 # dsh-plan-usage
 
-在 DeepSeek Harness 的 Web 对话框**右下角**显示套餐用量角标，实时展示每个套餐的三个用量窗口：
+在 DeepSeek Harness 的 Web 对话框**右下角**显示套餐用量角标，持续展示每个套餐的三个用量窗口：
 
 - **5小时**（滚动窗口）
 - **周限**
@@ -12,16 +12,36 @@
 
 ```
 OpenCode Go 0% 79% 42%
-GLM Z.AI 1% 0% 1%
-GLM 智谱 请设置 Key
-Kimi Code 12% 6%
+GLM 智谱 1% 0% 1%
+Kimi Code 12% 6% 0%
 ```
 
 胶囊外形自适应：只有一行时保持圆弧胶囊，多行时自动改为圆角矩形。
 
-点击胶囊展开面板，面板按套餐分区，每区展示三个窗口的进度条与重置倒计时，每 60 秒自动刷新。
+点击胶囊展开面板，面板按套餐分区，每区展示各窗口（以实际返回为准，如未取到的窗口不占行）的进度条与重置倒计时，每 60 秒自动刷新。
 
 ![dsh-plan-usage 效果图](dsh-plan-usage.png)
+
+## 安装
+
+这是一个 DSH **bundle**（组合包）。用 `dsh plugin` 安装到某个 profile (以下两条命令**二选一**)：
+
+```sh
+# 1) 从 GitHub 源码安装
+dsh plugin --profile web add "github:chendefine/dsh-plugins-plan-usage"
+
+# 2) 从 npm 安装（锁定版本）
+dsh plugin --profile web add dsh-plan-usage@0.2.1
+```
+
+装完验证并启动：
+
+```sh
+dsh --profile web --dump-config   # 确认出现 "# == dsh-plan-usage" 层
+dsh web
+```
+
+> 本插件是**纯 JS、零构建**：GitHub 源码安装时没有 `prepare` 脚本，因此**不需要**在 profile 的 `pnpm-workspace.yaml` 里配置 `allowBuilds`。
 
 ## 配置
 
@@ -36,10 +56,15 @@ Kimi Code 12% 6%
 每个套餐的 API Key 解析优先级相同：
 
 1. 插件配置卡片里填入的该套餐 API Key（最高）；
-2. 「设置 → 模型」里保存的该套餐凭据；
-3. 环境变量（OpenCode Go：`OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`；GLM Z.AI：`ZAI_API_KEY` / `Z_AI_API_KEY` / `GLM_ZAI_API_KEY`；GLM 智谱：`ZHIPU_API_KEY` / `ZHIPUAI_API_KEY` / `GLM_API_KEY` / `BIGMODEL_API_KEY`；Kimi Code：`KIMI_CODE_API_KEY` / `KIMI_API_KEY`）。
+2. 进程环境变量（同名凭据名，只读）；
+3. 「设置 → 模型」里保存的该套餐凭据（`$DSH_HOME/.credentials.yaml`）；
+4. 项目 `.env` / `$DSH_HOME/.env` 中的同名条目（回退）。
 
-卡片里的 Key 留空时回退到上面的 2/3；如果两边都没设置，该套餐在胶囊与面板中会提示配置。
+凭据名如下（OpenCode Go：`OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY`；GLM Z.AI：`ZAI_API_KEY` / `Z_AI_API_KEY` / `GLM_ZAI_API_KEY`；GLM 智谱：`ZHIPU_API_KEY` / `ZHIPUAI_API_KEY` / `GLM_API_KEY` / `BIGMODEL_API_KEY`；Kimi Code：`KIMI_CODE_API_KEY` / `KIMI_API_KEY`；Kimi Cookie：`KIMI_AUTH_TOKEN`），在第 2–4 层都生效。
+
+> 注意：进程环境变量优先于凭据库。若启动 harness 的进程环境里已有同名变量，「设置 → 模型」保存该凭据会被拒绝（该凭据名由启动环境提供、只读）；插件配置卡片不受影响（它永远是最高优先级）。
+
+卡片里的 Key 留空时回退到上面的 2/3/4；如果全都没设置，该套餐在胶囊与面板中会提示配置。
 
 ### GLM 说明
 
@@ -67,36 +92,11 @@ GLM 有两个渠道，各自独立开关与 API Key：
 
 ## 前置条件
 
-在 harness 的凭据库（`~/.dsh/.credentials.yaml`）或进程环境中配置套餐的 API Key：
+需要一个可用的套餐 API Key，三种放法（解析优先级见上方「配置」节）：
 
-- 推荐：**设置 → 模型 → 对应提供方 → 填入 API Key 保存**（会自动写入凭据名）。
+- 推荐：**设置 → 模型 → 对应提供方 → 填入 API Key 保存**（自动写入凭据库，默认 `~/.dsh/.credentials.yaml`，`$DSH_HOME` 可覆盖）。
 - 或：在 **设置 → 插件 → 插件配置** 的「套餐用量」卡片里直接填入各套餐的 Key。
-- 或：导出环境变量（见上）。
-
-## 安装
-
-这是一个 DSH **bundle**（组合包）。用 `dsh plugin` 安装到某个 profile：
-
-```sh
-# 1) 从 GitHub 源码安装（建议锁定 commit）
-dsh plugin --profile web add "github:you/dsh-plan-usage#<sha>"
-
-# 2) 从 npm 安装（作者已发布）
-dsh plugin --profile web add dsh-plan-usage
-
-# 3) 本地目录 / tarball
-dsh plugin --profile web add ./dsh-plan-usage
-dsh plugin --profile web add ./dsh-plan-usage-0.3.0.tgz
-```
-
-装完验证并启动：
-
-```sh
-dsh --profile web --dump-config   # 确认出现 "# == dsh-plan-usage" 层
-dsh web
-```
-
-> 本插件是**纯 JS、零构建**：GitHub 源码安装时没有 `prepare` 脚本，因此**不需要**在 profile 的 `pnpm-workspace.yaml` 里配置 `allowBuilds`。
+- 或：导出同名环境变量（优先级最高，见上）。
 
 ## 目录结构
 
@@ -142,20 +142,20 @@ dsh-plan-usage/
 
 ## 工作原理
 
-- **Host 半**（`index.js` + `plans/`）：`webServer` 注册 `GET /api/plan-usage`，并行拉取每个已启用套餐（渠道）的用量——OpenCode Go 经 `curl` 拉取 `https://opencode.ai/zen/go/v1/usage`（Bearer），GLM Z.AI / 智谱分别拉取各自的 `quota/limit` 接口（无 Bearer），Kimi Code 拉取 `https://api.kimi.com/coding/v1/usages`（Bearer，可选 kimi-auth Cookie 增强月度会员额度）——每个套餐的端点、鉴权与归一化独立封装在 `plans/` 下的模块里，归一化后按套餐返回 JSON；同时注册 `plan-usage` 设置命名空间（全局开关 + 各套餐开关与密钥，密钥 `role('secret')`）作为配置的持久化存储，并注册 `GET/POST /api/plan-usage/config` 供浏览器读写配置。每个套餐的 Key 按「插件配置 > 模型配置（凭据库）」解析。
+- **Host 半**（`index.js` + `plans/`）：`webServer` 注册 `GET /api/plan-usage`，并行拉取每个已启用套餐（渠道）的用量——OpenCode Go 经 `curl` 拉取 `https://opencode.ai/zen/go/v1/usage`（Bearer），GLM Z.AI / 智谱分别拉取各自的 `quota/limit` 接口（无 Bearer），Kimi Code 拉取 `https://api.kimi.com/coding/v1/usages`（Bearer，可选 kimi-auth Cookie 增强月度会员额度）——每个套餐的端点、鉴权与归一化独立封装在 `plans/` 下的模块里，归一化后按套餐返回 JSON；同时注册 `plan-usage` 设置命名空间（全局开关 + 各套餐开关与密钥，密钥 `role('secret')`）作为配置的持久化存储，并注册 `GET/POST /api/plan-usage/config` 供浏览器读写配置。每个套餐的 Key 按「插件配置 > 环境变量 > 模型配置（凭据库）> .env」解析（完整优先级见「配置」节）。
 - **浏览器半**（`client.js`）：以 `window.__ModuleLoader__.load` 闭包工厂注册到客户端模块表，在 `shell.overlay` 插槽渲染角标（`fetch('/api/plan-usage')` 同源取数、每 60 秒轮询，并随全局/套餐开关显示/隐藏），在 `settings.plugin.item` 插槽渲染配置卡片。
 
-> 配置卡片不依赖 harness 的「配置客户端命名空间白名单」：浏览器端通过插件自己的 `/api/plan-usage/config` 路由读写，Host 端用 in-process 的设置命名空间持久化。因此**安装本插件无需修改 harness 源码**。
+> 配置卡片不依赖 harness 的「配置客户端命名空间白名单」：浏览器端通过插件自己的 `/api/plan-usage/config` 路由读写，Host 端用 in-process 的设置命名空间持久化。因此**安装本插件无需修改 harness 源码**。密钥一律 write-only：任何接口响应都不回传密钥值，浏览器只能看到「已配置 / 未配置」。
 
 ## 本地开发（不必先打包）
 
 在源码 checkout 里，可直接用 `--patch` overlay 快速调试：
 
 ```sh
-pnpm dsh web --patch ./cordis.patch.yml
+dsh web --patch ./cordis.patch.yml
 ```
 
-调试 OK 后按上面的方式打包分发。
+调试 OK 后按上面的方式打包分发。（若 `dsh` 不在 PATH、而是作为项目依赖安装，可用 `pnpm exec dsh web --patch ./cordis.patch.yml`。）
 
 ## License
 
