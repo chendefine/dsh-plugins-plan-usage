@@ -1,0 +1,36 @@
+{
+  "name": "dsh-plan-usage",
+  "version": "0.1.0",
+  "description": "OpenCode Go 套餐用量角标：在 Web 对话框右下角显示 5小时/周限/月限 三个用量窗口。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "opencode",
+    "usage",
+    "quota"
+  ],
+  "license": "MIT"
+}
