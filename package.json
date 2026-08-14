@@ -1,7 +1,7 @@
 {
   "name": "dsh-plan-usage",
-  "version": "0.1.0",
-  "description": "OpenCode Go 套餐用量角标：在 Web 对话框右下角显示 5小时/周限/月限 三个用量窗口。",
+  "version": "0.1.1",
+  "description": "套餐用量角标：在 Web 对话框右下角显示 5小时/周限/月限 三个用量窗口（当前支持 OpenCode Go），并在「设置 → 插件」提供启用开关与 API Key 配置。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -21,7 +21,9 @@
     },
     "client": {
       "platform": "web",
-      "inject": []
+      "inject": [
+        "slots"
+      ]
     }
   },
   "keywords": [
@@ -32,5 +34,9 @@
     "usage",
     "quota"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chendefine/dsh-plugins-plan-usage.git"
+  },
   "license": "MIT"
 }
